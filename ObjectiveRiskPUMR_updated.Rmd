@@ -1,0 +1,348 @@
+---
+title: "ObjectiveRisksPUMR_updated"
+author: "Calvin Isch"
+date: "12/12/2021"
+output: html_document
+---
+
+# Load data
+user_responses.csv contains relevant variables from longitudinal US cohort. 
+GBD_risks.csv contains GBD data relevant for each participant
+
+# Updated variables:
+Income, savings, assets -- from 1-9 value to middle of bracket
+Wealth -- sum of assets and savings
+PUMR -- 100 - likelihood of living to 79 with max effort 3 times (March, May, July)
+PCMR -- likelihood of living to 79 with max effort - likelihood with min effort, same times
+PUMRCause -- likelihood of dying before 79 with max effort to avoid specific cause
+HealthBehavior -- sum of 6 health risk behaviors
+
+``` {r , echo=FALSE}
+# Load data
+df <- read.csv("user_responses.csv")
+df_sev <- read.csv("GBD_risks.csv")
+
+library(moments)
+library(lme4)
+library(bestNormalize)
+#library(lmtest)
+
+# Change to middle of brackets for income
+wealth_vals = c(15000,20000,30000,42500,62500,87500,125000,175000,250000)
+wealth_levels <- function(x){
+  if (is.na(x)){
+    result <- NA
+  }
+  else{
+    result <- wealth_vals[x]
+  }
+  return(result)
+}
+
+df$Income2 <- lapply(df$Income, wealth_levels)
+
+# Change to middle of brackets for savings and assets
+wealth_vals = c(250,2750,12500,32500,57500,85000,125000,175000,250000)
+df$Savings2 <- as.numeric(lapply(df$Savings, wealth_levels))
+df$Assets2 <- as.numeric(lapply(df$Assets, wealth_levels))
+df$Wealth <- df$Savings2 + df$Assets2
+
+
+pumr <- function(x){
+  if (is.na(x)){
+    result <- NA
+  }
+  else {
+    result <- 100 - x
+  }
+  return(result)
+}
+
+
+df$PUMRMarch <-  as.numeric(lapply(df$EffortLive.7, pumr))
+df$PUMRMay <-  as.numeric(lapply(df$EffortLive.9, pumr)) # Pre-reg misstates that we had April. Really May.
+df$PUMRJuly <-  as.numeric(lapply(df$EffortLive.11, pumr))
+
+df$PCMRMarch <- df$EffortLive.7 - df$NoEffortLive.7
+df$PCMRMay <- df$EffortLive.9 - df$NoEffortLive.9
+df$PCMRJuly <- df$EffortLive.11 - df$NoEffortLive.11
+
+# Do not subtract these from 100 because they are perceived likelihood of dying rather than living
+df$PUMRCovid <-  as.numeric(df$Mortality1)
+df$PUMRAir <-  as.numeric(df$Mortality2)
+df$PUMRWater <-  as.numeric(df$Mortality3)
+df$PUMRViolence <-  as.numeric(df$Mortality4)
+df$PUMRTravel <-  as.numeric(df$Mortality5)
+df$PUMROccupation <-  as.numeric(df$Mortality6)
+df$PUMRDisaster <-  as.numeric(df$Mortality7)
+df$PUMRDisease <-  as.numeric(df$Mortality8)
+
+# Sum health risk behavior DOSPERT scale questions
+df$HealthBehavior <- as.numeric(df$RiskBehavior1 + df$RiskBehavior2 + df$RiskBehavior3 + df$RiskBehavior4 + df$RiskBehavior5 + df$RiskBehavior6)
+
+# Count of people who answer each question
+colSums(!is.na(df))
+# Remove other null values from state
+colSums(!is.na(df[which(df$State_Name != ""),]))[8]
+```
+
+
+
+# Environmental risk SEV and PUMR
+Mixed effects model exploring if air pollution SEV is predictive of PUMR for air pollution when controlling for education, wealth, income, age, sex, and State
+``` {r Study 1}
+good_summary <- function(lov){
+  s = round(sd(lov,na.rm=TRUE),2)
+  m = round(mean(lov,na.rm=TRUE),2)
+  med = round(median(lov,na.rm=TRUE),2)
+  sk = round(skewness(lov,na.rm=TRUE),2)
+  k = round(kurtosis(lov,na.rm=TRUE),2)
+  return(paste('Mean:',m,'SD:',s,'Median:',med,'Skew:',sk,'Kurtosis:',k,sep=" "))
+}
+
+# Waiting on Model 1 assumptions good
+df_model <- merge(df,df_sev[df_sev[,'Risk'] == 'Environmental/occupational risks',],by=c('User'))
+print(paste('SEV Vals -- ',good_summary(df_model$X5_year_range)))
+print(paste('PUMR -- ',good_summary(df_model$PUMRMarch)))
+
+# Test which of the control variables are significantly related to the outcome variable
+df_model <- df_model [df_model$Sex %in% c("Male", "Female"), ]
+wilcox.test(df_model$PUMRMarch~df_model$Sex)
+cor.test(df_model$Wealth,df_model$PUMRMarch,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Education,df_model$PUMRMarch,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Income,df_model$PUMRMarch,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Age,df_model$PUMRMarch,use="pairwise.complete.obs",method='spearman')
+
+# Normalize wealth, education, income, age (the significant control), PUMR, and SEV
+df_model$PUMRMarchNormal <- bestNormalize(df_model$PUMRMarch)$x.t
+df_model$X5_year_rangeNormal <- bestNormalize(df_model$X5_year_range)$x.t
+df_model$AgeNormal <- bestNormalize(df_model$Age)$x.t
+df_model$WealthNormal <- bestNormalize(df_model$Wealth)$x.t
+df_model$IncomeNormal <- bestNormalize(df_model$Income)$x.t
+
+risk_mixed_normal = lmer(PUMRMarchNormal ~ X5_year_rangeNormal + WealthNormal + Education + IncomeNormal + AgeNormal + (1 | State_Name), data = df_model)
+
+summary(risk_mixed_normal)
+
+# This produces an intercept for state of 0, so the random variable isn't helping any. We can remove and use a more basic model
+
+risk_normal = lm(PUMRMarchNormal ~ X5_year_rangeNormal + WealthNormal + Education + IncomeNormal + AgeNormal, data = df_model) 
+
+summary(risk_normal,diagnostics=TRUE)
+
+pdf("diagnostic_model4.pdf", width=6, height=6)
+par(mfrow = c(2, 2))
+plot(risk_normal)
+dev.off()
+```
+
+``` {r figure 1}
+library(ggplot2)
+library(gridExtra)
+
+df_model <- merge(df,df_sev[df_sev[,'Risk'] == 'Environmental/occupational risks',],by=c('User'))
+
+p1 <- ggplot(df_model) + aes(x = State_Name, y = PUMRMarch) + stat_summary(geom = "bar", fun = "mean") + theme_bw() + theme(axis.text.x = element_text(angle = 90)) + xlab("") + ylab("Mean Perceived UMR") + geom_hline(yintercept= mean(as.numeric(df_model$PUMRMarch),na.rm=TRUE), linetype="dashed",col="blue")
+
+p2 <- ggplot(df_model) + aes(x = State_Name, y = X5_year_range) + stat_summary(geom = "bar", fun = "mean") + theme_bw() + theme(axis.text.x = element_text(angle = 90)) + xlab("") + ylab("Environmental SEV") + geom_hline(yintercept= mean(as.numeric(df_model$X5_year_range),na.rm=TRUE), linetype="dashed",col="blue")
+
+grid.arrange(p1, p2, nrow = 2)
+```
+
+``` {r Study 2}
+library(ggcorrplot)
+
+df_model <- df[c("PUMRMarch","PUMRCovid","PUMRAir","PUMRWater","PUMRViolence","PUMRTravel","PUMROccupation","PUMRDisaster","PUMRDisease")]
+
+# First pearson, but probably should use spearman because so many non-normal
+corr <- cor(df_model, method = "pearson", use = "complete.obs")
+corr <- cor(df_model, method = "spearman", use = "complete.obs")
+
+ggcorrplot(corr, hc.order = TRUE, type = "lower",
+   lab = TRUE)
+
+```
+
+# Regression between specific risks and PUMR
+``` {r Study 2}
+df_model <- df
+
+# Test which of the control variables are significantly related to the outcome variable
+df_model <- df_model [df_model$Sex %in% c("Male", "Female"), ]
+wilcox.test(df_model$PUMRMarch~df_model$Sex)
+cor.test(df_model$Wealth,df_model$PUMRMarch,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Education,df_model$PUMRMarch,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Income,df_model$PUMRMarch,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Age,df_model$PUMRMarch,use="pairwise.complete.obs",method='spearman')
+
+df_model$PUMRMarchNormal <- bestNormalize(df_model$PUMRMarch)$x.t
+df_model$AgeNormal <- bestNormalize(df_model$Age)$x.t
+df_model$WealthNormal <- bestNormalize(df_model$Wealth)$x.t
+df_model$IncomeNormal <- bestNormalize(df_model$Income)$x.t
+df_model$PUMRCovidNormal <- bestNormalize(df_model$PUMRCovid)$x.t
+df_model$PUMRAirNormal <- bestNormalize(df_model$PUMRAir)$x.t
+df_model$PUMRWaterNormal <- bestNormalize(df_model$PUMRWater)$x.t
+df_model$PUMRViolenceNormal <- bestNormalize(df_model$PUMRViolence)$x.t
+df_model$PUMRTravelNormal <- bestNormalize(df_model$PUMRTravel)$x.t
+df_model$PUMROccupationNormal <- bestNormalize(df_model$PUMROccupation)$x.t
+df_model$PUMRDisasterNormal <- bestNormalize(df_model$PUMRDisaster)$x.t
+df_model$PUMRDiseaseNormal <- bestNormalize(df_model$PUMRDisease)$x.t
+
+risk_mixed_normal = lmer(PUMRMarchNormal ~  PUMRCovidNormal+ PUMRAirNormal + PUMRWaterNormal + PUMRViolenceNormal + PUMRTravelNormal + PUMROccupationNormal + PUMRDisasterNormal + PUMRDiseaseNormal +WealthNormal + Education + IncomeNormal + AgeNormal + (1 | State_Name), data = df_model)
+
+summary(risk_mixed_normal)
+
+risk_normal <- lm(PUMRMarchNormal ~  PUMRCovidNormal+ PUMRAirNormal + PUMRWaterNormal + PUMRViolenceNormal + PUMRTravelNormal + PUMROccupationNormal + PUMRDisasterNormal + PUMRDiseaseNormal +WealthNormal + Education + IncomeNormal + AgeNormal, data = df_model)
+
+summary(risk_normal)
+
+
+# check the residuals
+png("my_plot2.png", width=6, height=6)
+par(mfrow = c(2, 2))
+plot(risk_normal)
+dev.off()
+
+# PUMR for disease generally and education are only significant predictors of PUMR
+
+```
+
+
+# Stability of PUMR over time
+``` {r Study 3}
+df_model <- df[c("PUMRMarch","PUMRMay","PUMRJuly")]#,"PCMRMarch","PCMRMay","PCMRJuly")]
+
+hist(df_model$PUMRMarch)
+hist(df_model$PUMRMay)
+hist(df_model$PUMRJuly)
+
+# None of these appear normal
+good_summary(df_model$PUMRMarch)
+good_summary(df_model$PUMRMay)
+good_summary(df_model$PUMRJuly)
+
+cor.test(df_model$PUMRMarch,df_model$PUMRMay,use="pairwise.complete.obs",method='pearson')
+cor.test(df_model$PUMRMarch,df_model$PUMRJuly,use="pairwise.complete.obs",method='pearson')
+cor.test(df_model$PUMRMay,df_model$PUMRJuly,use="pairwise.complete.obs",method='pearson')
+
+cor(df_model, method = "pearson", use = "complete.obs")
+
+# Might be interesting to control for education, SES, and age.
+plot(df_model$PUMRMarch,df_model$PUMRMay)
+ggplot(df_model, aes(x=PUMRMarch, y=PUMRJuly)) +
+  geom_point() + geom_smooth(method=lm) + theme_classic() + scale_color_brewer(palette="Dark2")
+
+
+# Could we plot means over months and also look at blips.
+plot(c(1,2,3),c(mean(df$PUMRMarch,na.rm=TRUE),mean(df$PUMRMay,na.rm=TRUE),mean(df$PUMRJuly,na.rm=TRUE)))
+wilcox.test(df$PUMRMarch, df$PUMRMay, paired = TRUE, alternative = "two.sided",na.rm =TRUE)
+wilcox.test(df$PUMRMarch, df$PUMRJuly, paired = TRUE, alternative = "two.sided",na.rm =TRUE)
+```
+# Risk from air pollution, contaminated water, and occupational risk SEV and Perceived mortality risk from each cause
+OLS regressions looking at these relationships
+
+``` {r Supplemental Method 1}
+# Air Pollution -------------------------------------------------
+df_model <- merge(df,df_sev[df_sev[,'Risk'] == 'Air pollution',],by=c('User'))
+
+print(paste('SEV Vals -- ',good_summary(df_model$X5_year_range)))
+print(paste('PUMR AIR Pollution -- ',good_summary(df_model$PUMRAir))) 
+
+# PUMR has high kurtosis -- makes sense because most people have low perceived probability that they will die of this cause in US. Also skewed for this reason. So we do not have a normal distribution. Definitely will want to check assumptions for model.
+
+# Test which of the control variables are significantly related to the outcome variable
+cor.test(df_model$Wealth,df_model$PUMRAir,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Education,df_model$PUMRAir,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Income,df_model$PUMRAir,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Age,df_model$PUMRAir,use="pairwise.complete.obs",method='spearman')
+df_model <- df_model [df_model$Sex %in% c("Male", "Female"), ]
+wilcox.test(df_model$PUMRAir~df_model$Sex)
+
+# Looks like Age and Sex are the significant variables here
+# Normalize all linear (and ordinal) independent predictors
+df_model$PUMRAirNormal <- bestNormalize(df_model$PUMRAir)$x.t
+df_model$X5_year_rangeNormal <- bestNormalize(df_model$X5_year_range)$x.t
+df_model$AgeNormal <- bestNormalize(df_model$Age)$x.t
+
+# 5 year and Sum to 79 -- maybe do both to look for differences, Then we can talk about if people are summing up more info (whole life) or only thinking about here and now? Supplemental analysis! 
+risk_mixed_normal = lmer(PUMRAirNormal ~ X5_year_rangeNormal + AgeNormal + Sex + (1 | State_Name), data = df_model)
+summary(risk_mixed_normal, diagnostics=TRUE)
+
+risk_normal = lm(PUMRAirNormal ~ X5_year_rangeNormal + AgeNormal + Sex, data = df_model) 
+summary(risk_normal,diagnostics=TRUE)
+
+
+
+
+# Unsafe water  -------------------------------------------------
+df_model <- merge(df,df_sev[df_sev[,'Risk'] == 'Unsafe water source',],by=c('User'))
+print(paste('SEV Vals -- ',good_summary(df_model$X5_year_range)))
+print(paste('PUMR Water -- ',good_summary(df_model$PUMRWater)))
+
+# Test which of the control variables are significantly related to the outcome variable
+cor.test(df_model$Wealth,df_model$PUMRWater,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Education,df_model$PUMRWater,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Income,df_model$PUMRWater,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Age,df_model$PUMRWater,use="pairwise.complete.obs",method='spearman')
+df_model <- df_model [df_model$Sex %in% c("Male", "Female"), ]
+wilcox.test(df_model$PUMRWater~df_model$Sex)
+
+# Normalize age & sex (the significant controls), PUMR, and SEV
+df_model$PUMRWaterNormal <- bestNormalize(df_model$PUMRWater)$x.t
+df_model$X5_year_rangeNormal <- bestNormalize(df_model$X5_year_range)$x.t
+df_model$AgeNormal <- bestNormalize(df_model$Age)$x.t
+
+risk_normal = lm(PUMRWaterNormal ~ X5_year_rangeNormal + AgeNormal + Sex, data = df_model) 
+summary(risk_normal,diagnostics=TRUE)
+
+
+
+
+# Occupational Risk -------------------------------------------------
+df_model <- merge(df,df_sev[df_sev[,'Risk'] == 'Occupational risks',],by=c('User'))
+print(paste('SEV Vals -- ',good_summary(df_model$X5_year_range)))
+print(paste('PUMR Occupational Risks -- ',good_summary(df_model$PUMROccupation)))
+
+# Test which of the control variables are significantly related to the outcome variable
+cor.test(df_model$Wealth,df_model$PUMROccupation,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Education,df_model$PUMROccupation,,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Income,df_model$PUMROccupation,,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Age,df_model$PUMROccupation,,use="pairwise.complete.obs",method='spearman')
+df_model <- df_model [df_model$Sex %in% c("Male", "Female"), ]
+wilcox.test(df_model$PUMROccupation~df_model$Sex)
+
+# Normalize age (the significant control), PUMR, and SEV
+df_model$PUMROccupationNormal <- bestNormalize(df_model$PUMROccupation)$x.t
+df_model$X5_year_rangeNormal <- bestNormalize(df_model$X5_year_range)$x.t
+df_model$AgeNormal <- bestNormalize(df_model$Age)$x.t
+
+risk_normal = lm(PUMROccupationNormal ~ X5_year_rangeNormal + AgeNormal, data = df_model) 
+summary(risk_normal,diagnostics=TRUE)
+
+```
+
+``` {r Supplemental Method 2}
+print(paste('Health Behavior -- ',good_summary(df$HealthBehavior)))
+print(paste('PUMR -- ',good_summary(df$PUMRMarch)))
+
+# Test which of the control variables are significantly related to the outcome variable
+cor.test(df_model$Wealth,df_model$HealthBehavior,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Education,df_model$HealthBehavior,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Income,df_model$HealthBehavior,use="pairwise.complete.obs",method='spearman')
+cor.test(df_model$Age,df_model$HealthBehavior,use="pairwise.complete.obs",method='spearman')
+df_model <- df_model [df_model$Sex %in% c("Male", "Female"), ]
+wilcox.test(df_model$HealthBehavior~df_model$Sex)
+
+# Wealth, age, and sex are significant
+df_model$HealthBehaviorNormal <- bestNormalize(df_model$HealthBehavior)$x.t
+df_model$PUMRMarchNormal <- bestNormalize(df_model$PUMRMarch)$x.t
+df_model$AgeNormal <- bestNormalize(df_model$Age)$x.t
+df_model$WealthNormal <- bestNormalize(df_model$Wealth)$x.t
+
+
+risk_mixed_normal = lm(HealthBehaviorNormal~ PUMRMarchNormal + WealthNormal +  AgeNormal + Sex, data = df_model)
+summary(risk_mixed_normal)
+
+```
+
+
