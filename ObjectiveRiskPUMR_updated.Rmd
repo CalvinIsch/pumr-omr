@@ -231,7 +231,10 @@ good_summary(df_model$PUMRMarch)
 
 # Stability of PUMR over time
 ``` {r Study 3}
+library(ggplot2)
+
 df_model <- df[c("PUMRMarch","PUMRMay","PUMRJuly")]
+
 
 # None of these appear normal
 good_summary(df_model$PUMRMarch)
