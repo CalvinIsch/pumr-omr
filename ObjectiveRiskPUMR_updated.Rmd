@@ -62,7 +62,7 @@ pumr <- function(x){
 
 
 df$PUMRMarch <-  as.numeric(lapply(df$EffortLive.7, pumr))
-df$PUMRMay <-  as.numeric(lapply(df$EffortLive.9, pumr)) # Pre-reg misstates that we had April. Really May.
+df$PUMRMay <-  as.numeric(lapply(df$EffortLive.9, pumr)) 
 df$PUMRJuly <-  as.numeric(lapply(df$EffortLive.11, pumr))
 
 df$PCMRMarch <- df$EffortLive.7 - df$NoEffortLive.7
@@ -407,3 +407,32 @@ summary(risk_normal,diagnostics=TRUE)
 
 ```
 
+
+
+```{r}
+PUMR <- c()
+Month <- c()
+for (i in df$PUMRMarch){
+  PUMR <- c(PUMR,i)
+  Month <- c(Month,'March')
+}
+
+for (i in df$PUMRMay){
+  PUMR <- c(PUMR,i)
+  Month <- c(Month,'May')
+}
+
+for (i in df$PUMRJuly){
+  PUMR <- c(PUMR,i)
+  Month <- c(Month,'July')
+}
+
+df_hist <- data.frame(PUMR=PUMR,Month=Month)
+
+ggplot(df_hist,aes(x=PUMR,group=Month,colour=Month,fill=Month)) +
+  geom_histogram(aes(y=..density..), colour="black",fill="white")+
+  geom_density(alpha=0.2) +
+  facet_grid(cols=vars(Month)) +
+  theme_bw()
+
+```
